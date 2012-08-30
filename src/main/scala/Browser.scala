@@ -2,6 +2,8 @@ package com.github.philcali.puppet
 
 import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
 import lmxml.transforms.{ Foreach, If, Else, Value }
+
+import css.query.default._
 import dispatch._
 
 import com.ning.http.client.{
