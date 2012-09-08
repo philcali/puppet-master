@@ -17,6 +17,14 @@ trait Action extends Function3[LmxmlNode, PuppetClient, Context, (Instructions =
   }
 }
 
+/**
+ * Makes a simple GET
+ *
+ * go @to="example.com": makes a GET request
+ * go @to="example.com" @base: makes a GET request, and stores this url as the
+ * base request for future requests
+ * go @to="example.com" @base @secure: makes a secured GET request
+ */
 object GoAction extends Action {
   val logResponse = "[%d] - %s"
 
@@ -97,6 +105,11 @@ object GoAction extends Action {
   }
 }
 
+/**
+ * Finds html node in source to be processed later
+ *
+ * find @by-css="#id .class > elem": attempts to use CSS selectors on source
+ */
 object FindAction extends Action {
   import css.query.default._
 
@@ -110,6 +123,12 @@ object FindAction extends Action {
   }
 }
 
+/**
+ * Sets a found result as a context value
+ *
+ * set @value="@href": sets found result attribute as context value
+ * set @name="something" @value="@href": tags value with a specific name
+ */
 object SetAction extends Action {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
     val (key, attr) = stripAttrs(node.attrs, "set")
@@ -119,21 +138,40 @@ object SetAction extends Action {
   }
 }
 
+/**
+ * Iterates over searched results
+ *
+ * each @value="@href": begins iteration on href attr of node
+ * each @name="something" @value="@href": tags something to item, and iterates
+ * each @name="something" @value="@href" @take="3": grabs first three
+ */
 object EachAction extends Action {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
-    ctx.get[xml.NodeSeq]("find-results").map({
-      case xs if xs.headOption.isDefined =>
-        val (k, attr) = stripAttrs(node.attrs, "each")
-        val v = (xs.head \ attr).text
-        for {
-          s1 <- parent.instructions(cl, node.children, ctx + (k -> v))
-          s2 <- parent.instructions(cl, Seq(node), ctx + ("find-results" -> xs.tail))
-        } yield (s1 ::: s2)
-      case _ => Promise(Nil)
-    }).getOrElse(Promise(Nil))
+    ctx.get[xml.NodeSeq]("find-results").map(ns =>
+      node.attrs.get("take").map(_.toInt) match {
+        case Some(index) if index > 0 => ns.take(index)
+        case None => ns
+      }).map({
+        case xs if xs.headOption.isDefined =>
+          val (k, attr) = stripAttrs(node.attrs, "each")
+          val v = (xs.head \ attr).text
+          for {
+            s1 <- parent.instructions(cl, node.children, ctx + (k -> v))
+            s2 <- parent.instructions(cl, Seq(node), ctx + ("find-results" -> xs.tail))
+          } yield (s1 ::: s2)
+        case _ => Promise(Nil)
+      }
+    ).getOrElse(Promise(Nil))
   }
 }
 
+/**
+ * Prints out data to stdout
+ *
+ * println: prints out source
+ * println @context: prints out current context
+ * println @context @value="@find-results": prints specific context value
+ */
 object PrintAction extends Action {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
     node.attrs.get("context") match {
@@ -147,6 +185,11 @@ object PrintAction extends Action {
   }
 }
 
+/**
+ * Downloads response to file; uses file name from request
+ *
+ * download @to="location"
+ */
 object DownloadAction extends Action {
   def pump(in: java.io.InputStream, out: java.io.OutputStream): Unit = {
     val buffer = new Array[Byte](1024)
