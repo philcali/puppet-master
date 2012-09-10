@@ -23,6 +23,9 @@ object TestMan extends App {
 object Instructions {
   lazy val defaultSet: Map[String, Action] = Map(
     "go" -> GoAction,
+    "post" -> PostAction,
+    "submit" -> SubmitAction,
+    "source" -> SourceAction,
     "find" -> FindAction,
     "set" -> SetAction,
     "each" -> EachAction,

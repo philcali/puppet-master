@@ -1,32 +1,39 @@
 package com.github.philcali.puppet
 package actions
 
+import utils.Params
+
 import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
 
 import dispatch._
+import css.query.default._
 
 import java.io.{ File, FileOutputStream }
 import java.net.URLEncoder
 
 trait Action extends Function3[LmxmlNode, PuppetClient, Context, (Instructions => Promise[List[String]])] {
+  def fromCss(value: String, ctx: Context) = value.startsWith("css@") match {
+    case true =>
+      val keys = value.split("@")
+      val rtn = ctx.get[xml.NodeSeq]("source").map(
+        _ ? keys(1) getOrElse (xml.NodeSeq.Empty))
+      val inter = if (keys.length >= 3)
+        rtn map (_ \ keys(2) text) else
+        rtn map (_ text)
+      inter getOrElse value
+    case false => value
+  }
+
   def stripAttrs(attrs: Map[String, String], default: String) = {
     val key = attrs.get("name").getOrElse(default)
     val attr = attrs.get("value").filter(_ startsWith "@")
 
-    (key -> attr.getOrElse("@value"))
+    (key -> attr)
   }
 }
 
-/**
- * Makes a simple GET
- *
- * go @to="example.com": makes a GET request
- * go @to="example.com" @base: makes a GET request, and stores this url as the
- * base request for future requests
- * go @to="example.com" @base @secure: makes a secured GET request
- */
-object GoAction extends Action {
-  val logResponse = "[%d] - %s"
+trait UrlParser { self: Action =>
+  private val http = """[a-zA-Z]{2,5}://""".r
 
   private val unsafe = Map(
     ' ' -> "%20",
@@ -56,8 +63,6 @@ object GoAction extends Action {
     '@' -> "%40"
   )
 
-  def formEncode(s: String) = URLEncoder.encode(s, "utf-8")
-
   def encodeAll(s: String) = {
     s.map(c =>
       unsafe.get(c).getOrElse(reserved.get(c).getOrElse(c.toString))).mkString
@@ -66,11 +71,11 @@ object GoAction extends Action {
   def encode(s: String) =
     s.map(c => unsafe.get(c).getOrElse(c.toString)).mkString
 
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
-    val evaled = node.attrs.get("to")
+  def makeUrl(node: LmxmlNode, ctx: Context) = {
+    val evaled = url(node.attrs.get("to")
       .map(to => ctx.get(to).getOrElse(to))
       .map(to => ctx.response.map(_.getUri).map { uri =>
-        if (!to.contains("://")) {
+        if (http.findFirstMatchIn(to).filter(_.start == 0).isEmpty) {
           val str = ctx.get("base").getOrElse(uri.toURL.toString)
           val tURL = str.stripSuffix("/") + "/" + to.stripPrefix("/")
           // No way to know if URL is valid unless parsed
@@ -86,18 +91,110 @@ object GoAction extends Action {
               }).reverse.mkString("/")
           }
         } else to
-      }.getOrElse(to)).get
+      }.getOrElse(to)).get)
+    if (ctx.data.contains("secure")) evaled.secure else evaled
+  }
+}
+
+trait ParamParser { self: Action =>
+  protected val reservedKeys = List("to", "base", "secure")
+
+  def parseParams(node: LmxmlNode, ctx: Context) = {
+    val submitted = (node.attrs /: reservedKeys)(_ - _)
+
+    (submitted.get("file") match {
+      case Some(file) if Params.validate(file) =>
+        Params.convert(file) ++ (submitted - "file")
+      case _ => submitted
+    }).map {
+      case (k, v) if v.startsWith("@") =>
+        k -> ctx.get(v.stripPrefix("@")).map(_.toString).getOrElse(v)
+      case (k, v) => k -> self.fromCss(v, ctx)
+    }
+  }
+}
+
+/**
+ * Caches response into context
+ *
+ * source: access NodeSeq with @source
+ */
+object SourceAction extends Action {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+    val source = ctx.response.map(as.TagSoup).getOrElse(xml.NodeSeq.Empty)
+
+    parent.instructions(cl, node.children, ctx + ("source" -> source))
+  }
+}
+
+/**
+ * Submits a form
+ *
+ * submit @to="form.action" @method="get"
+ * submit @form="form#gbqf" @q="lmxml"
+ * submit @form="form" @file="data.json"
+ */
+object SubmitAction extends Action with UrlParser with ParamParser {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
+    val form = node.attrs.get("form").getOrElse("form")
+
+    val nForm = ctx.get[xml.NodeSeq]("source").map(_ $ form)
+    val to = nForm.map(_ \ "@action" text) getOrElse (node.attrs.getOrElse("to", ""))
+    val copied = node.copy(attrs = node.attrs + ("to" -> to) - "form")
+
+    nForm.map(_ ? "[method=post]" isDefined) match {
+      case Some(true) => PostAction(copied, cl, ctx)
+      case _ => GoAction(copied, cl, ctx)
+    }
+  }
+}
+
+/**
+ * Makes a POST to a url
+ *
+ * post @to="form.action" {
+ *   username: "pcali1",
+ *   password: "*******"
+ * }
+ * post @to="form.action" @username="@username"
+ * post @to="form.action" @file="submission.properties"
+ * post @to="form.action" @file="data.json"
+ */
+object PostAction extends Action with UrlParser with ParamParser {
+  val logResponse = "POST [%d] - %s"
+
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+    for {
+      r <- cl(makeUrl(node, ctx) << parseParams(node, ctx) OK ctx)
+      lines <- parent.instructions(cl, node.children, r - "source")
+    } yield {
+      val res = r.response.get
+      logResponse.format (res.getStatusCode, res.getUri.toURL) :: lines
+    }
+  }
+}
+
+/**
+ * Makes a simple GET
+ *
+ * go @to="example.com": makes a GET request
+ * go @to="example.com" @base: makes a GET request, and stores this url as the
+ * base request for future requests
+ * go @to="example.com" @base @secure: makes a secured GET request
+ */
+object GoAction extends Action with UrlParser with ParamParser {
+  val logResponse = "GET [%d] - %s"
+
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+    val theUrl = makeUrl(node, ctx)
 
     val temp = node.attrs.get("base")
-      .map(_ => ctx + ("base" -> evaled))
+      .map(_ => ctx + ("base" -> theUrl.url))
       .getOrElse(ctx)
 
-    val u = url(evaled)
-    val theUrl = node.attrs.get("secure").map(_ => u.secure).getOrElse(u)
-
     for {
-      r <- cl(theUrl OK temp)
-      lines <- parent.instructions(cl, node.children, r)
+      r <- cl(theUrl <<? parseParams(node, temp) OK temp)
+      lines <- parent.instructions(cl, node.children, r - "source")
     } yield {
       val res = r.response.get
       logResponse.format (res.getStatusCode, res.getUri.toURL) :: lines
@@ -111,13 +208,11 @@ object GoAction extends Action {
  * find @by-css="#id .class > elem": attempts to use CSS selectors on source
  */
 object FindAction extends Action {
-  import css.query.default._
-
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
     val byCss = node.attrs.get("by-css").getOrElse("*")
-    val results = ctx.response.map(as.TagSoup).map(
-      _ ? byCss getOrElse (xml.NodeSeq.Empty)
-    )
+    val results = ctx.get[xml.NodeSeq]("source")
+      .orElse(ctx.response.map(as.TagSoup))
+      .map(_ ? byCss getOrElse (xml.NodeSeq.Empty))
 
     parent.instructions(cl, node.children, ctx unwrap ("find-results" -> results))
   }
@@ -131,8 +226,9 @@ object FindAction extends Action {
  */
 object SetAction extends Action {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
-    val (key, attr) = stripAttrs(node.attrs, "set")
-    val value = ctx.get[xml.NodeSeq]("find-results").map(n => (n \ attr).text)
+    val (key, attr) = stripAttrs(node.attrs, node.name)
+    val value = ctx.get[xml.NodeSeq]("find-results").map(
+      n => attr.map(n \ _).getOrElse(n).text)
 
     parent.instructions(cl, node.children, ctx + (key -> value.getOrElse("")))
   }
@@ -142,6 +238,7 @@ object SetAction extends Action {
  * Iterates over searched results
  *
  * each @value="@href": begins iteration on href attr of node
+ * each @name="something": tags something to the text of item
  * each @name="something" @value="@href": tags something to item, and iterates
  * each @name="something" @value="@href" @take="3": grabs first three
  */
@@ -153,8 +250,8 @@ object EachAction extends Action {
         case None => ns
       }).map({
         case xs if xs.headOption.isDefined =>
-          val (k, attr) = stripAttrs(node.attrs, "each")
-          val v = (xs.head \ attr).text
+          val (k, attr) = stripAttrs(node.attrs, node.name)
+          val v = attr.map(xs.head \ _).getOrElse(xs.head).text
           for {
             s1 <- parent.instructions(cl, node.children, ctx + (k -> v))
             s2 <- parent.instructions(cl, Seq(node), ctx + ("find-results" -> xs.tail))

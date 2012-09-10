@@ -6,7 +6,7 @@ version := "0.1.0"
 
 scalaVersion := "2.9.2"
 
-scalacOptions += "-deprecation"
+scalacOptions ++= Seq("-deprecation", "-unchecked")
 
 crossScalaVersions := Seq("2.9.2", "2.9.1", "2.8.2", "2.8.1")
 

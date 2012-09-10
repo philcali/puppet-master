@@ -1,5 +1,6 @@
 package com.github.philcali.puppet
 
+import utils.Params
 import dispatch._
 
 import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
@@ -19,8 +20,6 @@ case class PuppetClient(config: Config) extends Executor {
 }
 
 object PuppetConfig {
-  import collection.JavaConversions.asScalaSet
-
   val defaultConfig = default.build
 
   def default = new Config.Builder
@@ -53,7 +52,7 @@ object PuppetConfig {
   }
 
   def fromFile(loc: String, origin: Config.Builder = default) =
-    loadFile(loc).map(loadMap(_, origin)).getOrElse(origin)
+    Params.load(loc).map(loadMap(_, origin)).getOrElse(origin)
 
   def fromLmxml(nodes: Seq[ParsedNode], origin: Config.Builder = default) =
     flattenConfigNodes(nodes).map(loadMap(_, origin)).getOrElse(origin)
@@ -70,19 +69,6 @@ object PuppetConfig {
       }):_*)
     }
   }
-
-  private def loadFile(loc: String) = {
-    val file = new File(loc)
-    if (file.exists) {
-      val in = new java.io.FileInputStream(file)
-      val p = new java.util.Properties()
-      p.load(in)
-      in.close()
-      Some(p.entrySet.map(e => e.getKey.toString -> e.getValue.toString).toMap)
-    } else {
-      None
-    }
-  }
 }
 
 case class Context(data: Map[String, Any]) extends (Response => Context) {
@@ -94,6 +80,8 @@ case class Context(data: Map[String, Any]) extends (Response => Context) {
     kv._2.map(p => this + (kv._1 -> p)).getOrElse(this)
 
   def + (kv: (String, Any)) = Context(data + kv)
+
+  def - (ks: String*) = Context((data /: ks)(_ - _))
 
   def apply(r: Response) = this + ("response" -> r)
 
