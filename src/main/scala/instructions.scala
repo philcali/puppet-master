@@ -69,6 +69,9 @@ case class Instructions(actions: Map[String, Action]) extends SinglePass[Promise
         first <- head
         second <- instructions(cl, ns, ctx)
       } yield (first ::: second)
+    case TextNode(data, _, child) :: ns if !data.isEmpty =>
+      println(data)
+      instructions(cl, ns, ctx)
     case lmxml.CommentNode(_) :: ns => instructions(cl, ns, ctx)
     case node :: ns =>
       for {

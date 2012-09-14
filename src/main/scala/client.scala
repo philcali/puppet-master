@@ -5,6 +5,8 @@ import dispatch._
 
 import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
 
+import com.ning.http.client.Cookie
+
 import com.ning.http.client.{
   AsyncHttpClientConfig => Config,
   AsyncHttpClient,
@@ -12,6 +14,7 @@ import com.ning.http.client.{
 }
 
 import java.io.{ File, FileOutputStream }
+import collection.JavaConversions.asScalaBuffer
 
 case class PuppetClient(config: Config) extends Executor {
   val client = new AsyncHttpClient(config)
@@ -28,6 +31,9 @@ object PuppetConfig {
       config.setFollowRedirects(
         options.get("follow-redirects").map(_.toBoolean)
                .getOrElse(defaultConfig.isRedirectEnabled)
+      ).setMaximumNumberOfRedirects(
+        options.get("max-redirects").map(_.toInt)
+               .getOrElse(defaultConfig.getMaxRedirects)
       ).setAllowPoolingConnection(
         options.get("keep-alive").map(_.toBoolean)
                .getOrElse(defaultConfig.getAllowPoolingConnection)
@@ -74,6 +80,8 @@ object PuppetConfig {
 case class Context(data: Map[String, Any]) extends (Response => Context) {
   def response = get[Response]("response")
 
+  def cookies = get[Map[String,Cookie]]("cookies").getOrElse(Map.empty)
+
   def get[A](key: String) = data.get(key).map(_.asInstanceOf[A])
 
   def unwrap(kv: (String, Option[_])) =
@@ -83,7 +91,9 @@ case class Context(data: Map[String, Any]) extends (Response => Context) {
 
   def - (ks: String*) = Context((data /: ks)(_ - _))
 
-  def apply(r: Response) = this + ("response" -> r)
+  def apply(r: Response) = this +
+    ("response" -> r) +
+    ("cookies" -> (cookies ++ Map(r.getCookies.map(c => c.toString -> c): _*)))
 
   override def toString() = "Context(data = %s)" format data.toString
 }

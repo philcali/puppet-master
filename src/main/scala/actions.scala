@@ -10,20 +10,11 @@ import css.query.default._
 
 import java.io.{ File, FileOutputStream }
 import java.net.URLEncoder
+import java.net.URI
+
+import util.parsing.combinator.RegexParsers
 
 trait Action extends Function3[LmxmlNode, PuppetClient, Context, (Instructions => Promise[List[String]])] {
-  def fromCss(value: String, ctx: Context) = value.startsWith("css@") match {
-    case true =>
-      val keys = value.split("@")
-      val rtn = ctx.get[xml.NodeSeq]("source").map(
-        _ ? keys(1) getOrElse (xml.NodeSeq.Empty))
-      val inter = if (keys.length >= 3)
-        rtn map (_ \ keys(2) text) else
-        rtn map (_ text)
-      inter getOrElse value
-    case false => value
-  }
-
   def stripAttrs(attrs: Map[String, String], default: String) = {
     val key = attrs.get("name").getOrElse(default)
     val attr = attrs.get("value").filter(_ startsWith "@")
@@ -76,14 +67,13 @@ trait UrlParser { self: Action =>
       .map(to => ctx.get(to).getOrElse(to))
       .map(to => ctx.response.map(_.getUri).map { uri =>
         if (http.findFirstMatchIn(to).filter(_.start == 0).isEmpty) {
-          val str = ctx.get("base").getOrElse(uri.toURL.toString)
-          val tURL = str.stripSuffix("/") + "/" + to.stripPrefix("/")
           // No way to know if URL is valid unless parsed
           try {
-            new java.net.URI(tURL).toString
+            ctx.get("base").map(new URI(_)).getOrElse(uri).resolve(to).toString
           } catch {
             case _ =>
               // Attempt to properly encode url's (form vs url)
+              val str = ctx.get("base").getOrElse(uri.toURL.toString)
               str.stripSuffix("/") + "/" +
               (to.stripPrefix("/").split("/").toList.reverse match {
                 case head :: tail => encode(head) :: tail.map(encodeAll)
@@ -92,12 +82,57 @@ trait UrlParser { self: Action =>
           }
         } else to
       }.getOrElse(to)).get)
-    if (ctx.data.contains("secure")) evaled.secure else evaled
+    val cookied = (evaled /: ctx.cookies.values)(_ addCookie _)
+    if (ctx.data.contains("secure")) cookied.secure else cookied
   }
 }
 
-trait ParamParser { self: Action =>
+trait ParamParser extends RegexParsers { self: Action =>
   protected val reservedKeys = List("to", "base", "secure")
+
+  type Yank = (String, Context) => String
+
+  val reader = new tools.jline.console.ConsoleReader()
+
+  val ident = """[a-zA-Z0-9_\-]+""".r
+
+  val everything = """[^@]+""".r
+
+  def fromCss: Parser[Yank] = "css@" ~> everything ~ opt("@" ~> ident) ^^ {
+    case selector ~ filter => (value, ctx) => {
+      val rtn = ctx.get[xml.NodeSeq]("source").map(
+        _ ? selector getOrElse (xml.NodeSeq.Empty))
+      filter.map (attr =>
+        rtn map (_ \ ("@" + attr) text)
+      ).getOrElse(
+        rtn map (_ text)
+      ).getOrElse(
+        value
+      )
+    }
+  }
+
+  def fromPrompt: Parser[Yank] = "read@" ~> everything ~ opt("@" ~> ident) ^^ {
+    case prompt ~ ctxKey => (value, ctx) => {
+      ctxKey.map(ctx.get[String](_)).filter(_.isDefined).map(_.get).getOrElse(
+        reader.readLine(prompt)
+      )
+    }
+  }
+
+  def fromPass: Parser[Yank] = "pass@" ~> everything ^^ (
+    prompt => (value, ctx) => reader.readLine(prompt, '*')
+  )
+
+  def options = (fromCss | fromPrompt | fromPass)
+
+  def yank(input: String): Yank = parseAll(options, input) match {
+    case Success(fun, _) => fun
+    case _ => (value, ctx) =>
+      if (value.startsWith("@")) {
+        ctx.get(value.stripPrefix("@")).map(_.toString).getOrElse(value)
+      } else value
+  }
 
   def parseParams(node: LmxmlNode, ctx: Context) = {
     val submitted = (node.attrs /: reservedKeys)(_ - _)
@@ -107,9 +142,7 @@ trait ParamParser { self: Action =>
         Params.convert(file) ++ (submitted - "file")
       case _ => submitted
     }).map {
-      case (k, v) if v.startsWith("@") =>
-        k -> ctx.get(v.stripPrefix("@")).map(_.toString).getOrElse(v)
-      case (k, v) => k -> self.fromCss(v, ctx)
+      case (k, v) => k -> yank(v).apply(v, ctx)
     }
   }
 }
@@ -138,8 +171,13 @@ object SubmitAction extends Action with UrlParser with ParamParser {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     val form = node.attrs.get("form").getOrElse("form")
 
-    val nForm = ctx.get[xml.NodeSeq]("source").map(_ $ form)
-    val to = nForm.map(_ \ "@action" text) getOrElse (node.attrs.getOrElse("to", ""))
+    val nForm = ctx.get[xml.NodeSeq]("source")
+      .map(_ ? form getOrElse xml.NodeSeq.Empty)
+
+    val to = nForm.map(_ \ "@action" text)
+      .getOrElse(node.attrs.getOrElse("to", ""))
+
+    // replace node with flattened to / action
     val copied = node.copy(attrs = node.attrs + ("to" -> to) - "form")
 
     nForm.map(_ ? "[method=post]" isDefined) match {
@@ -165,7 +203,7 @@ object PostAction extends Action with UrlParser with ParamParser {
 
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
     for {
-      r <- cl(makeUrl(node, ctx) << parseParams(node, ctx) OK ctx)
+      r <- cl(makeUrl(node, ctx) << parseParams(node, ctx) > ctx)
       lines <- parent.instructions(cl, node.children, r - "source")
     } yield {
       val res = r.response.get
@@ -193,7 +231,7 @@ object GoAction extends Action with UrlParser with ParamParser {
       .getOrElse(ctx)
 
     for {
-      r <- cl(theUrl <<? parseParams(node, temp) OK temp)
+      r <- cl(theUrl <<? parseParams(node, temp) > temp)
       lines <- parent.instructions(cl, node.children, r - "source")
     } yield {
       val res = r.response.get
@@ -210,9 +248,12 @@ object GoAction extends Action with UrlParser with ParamParser {
 object FindAction extends Action {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
     val byCss = node.attrs.get("by-css").getOrElse("*")
+    val con = node.attrs.get("contains").map(_.r).getOrElse(""".*""".r)
+
     val results = ctx.get[xml.NodeSeq]("source")
       .orElse(ctx.response.map(as.TagSoup))
       .map(_ ? byCss getOrElse (xml.NodeSeq.Empty))
+      .map(_ filter (n => con.findFirstMatchIn(n.text).isDefined))
 
     parent.instructions(cl, node.children, ctx unwrap ("find-results" -> results))
   }
