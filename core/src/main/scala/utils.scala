@@ -34,12 +34,16 @@ class JsonLoader extends FileLoader {
 class PropertiesLoader extends FileLoader {
   import collection.JavaConversions.asScalaSet
 
+  def convertProperties(p: Properties) = {
+    p.entrySet.map(e => e.getKey.toString -> e.getValue.toString).toMap
+  }
+
   def convert(source: String) = {
     val in = new FileInputStream(new File(source))
     try {
       val p = new Properties()
       p.load(in)
-      p.entrySet.map(e => e.getKey.toString -> e.getValue.toString).toMap
+      convertProperties(p)
     } catch {
       case _ => Map.empty
     } finally {

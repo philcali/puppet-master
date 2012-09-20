@@ -16,10 +16,8 @@ import com.ning.http.client.{
 import java.io.{ File, FileOutputStream }
 import collection.JavaConversions.asScalaBuffer
 
-case class PuppetClient(config: Config) extends Executor {
-  val client = new AsyncHttpClient(config)
-
-  val timeout = Duration.Zero
+case class PuppetClient(config: Config) extends Http {
+  override lazy val client = new AsyncHttpClient(config)
 }
 
 object PuppetConfig {

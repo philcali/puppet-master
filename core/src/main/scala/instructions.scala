@@ -7,19 +7,6 @@ import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
 
 import java.io.{ File, FileOutputStream }
 
-object TestMan extends App {
-  object Lmxml extends lmxml.PlainLmxmlFactory with lmxml.FileLoading
-
-  val promises = Lmxml.fromFile("instructions.lmxml")(Instructions.Default)
-
-  for {
-    promise <- promises
-    lines <- promise
-  } {
-    lines foreach println
-  }
-}
-
 object Instructions {
   lazy val defaultSet: Map[String, Action] = Map(
     "go" -> GoAction,

@@ -88,6 +88,8 @@ trait UrlParser { self: Action =>
 }
 
 trait ParamParser extends RegexParsers { self: Action =>
+  override def skipWhitespace = false
+
   protected val reservedKeys = List("to", "base", "secure")
 
   type Yank = (String, Context) => String
@@ -172,6 +174,7 @@ object SubmitAction extends Action with UrlParser with ParamParser {
     val form = node.attrs.get("form").getOrElse("form")
 
     val nForm = ctx.get[xml.NodeSeq]("source")
+      .orElse(ctx.response.map(as.TagSoup))
       .map(_ ? form getOrElse xml.NodeSeq.Empty)
 
     val to = nForm.map(_ \ "@action" text)
