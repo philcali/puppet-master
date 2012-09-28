@@ -37,6 +37,7 @@ object PuppetBuild extends Build {
     settings = generalSettings ++ Seq(
       libraryDependencies <++= (sbtVersion) { sv => Seq(
         "com.github.philcali" %% "lmxml-json" % "0.1.2",
+        "org.slf4j" % "slf4j-simple" % "1.7.1",
         "org.scala-sbt" % "launcher-interface" % sv % "provided"
       ) }
     )
