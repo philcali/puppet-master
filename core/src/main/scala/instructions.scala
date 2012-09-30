@@ -16,6 +16,7 @@ object Instructions {
     "find" -> FindAction,
     "set" -> SetAction,
     "each" -> EachAction,
+    "[each-item]" -> EachItemAction,
     "download" -> DownloadAction,
     "println" -> PrintAction
   )
@@ -25,17 +26,19 @@ object Instructions {
   def apply(actions: (String, Action)*) = new Instructions(Map(actions:_*))
 }
 
-case class Instructions(actions: Map[String, Action]) extends SinglePass[Promise[List[String]]] {
+case class Instructions(actions: Map[String, Action])
+  extends SinglePass[Promise[List[String]]] {
 
   type Nodes = Seq[ParsedNode]
 
   def single(node: ParsedNode) = node match {
     case LmxmlNode(name, attrs, children) if name == "browser" =>
-      val config = attrs.get("file")
-                        .map(PuppetConfig.fromFile(_))
-                        .getOrElse(PuppetConfig.default)
+      val config = PuppetConfig.fromLmxml(children,
+        attrs.get("file").map(PuppetConfig.fromFile(_))
+          .getOrElse(PuppetConfig.default)
+      )
 
-      val browser = PuppetClient(PuppetConfig.fromLmxml(children, config).build)
+      val browser = PuppetClient(config.build)
       instructions(browser, children.tail, Context(Map.empty)).onComplete({
         case _ => browser.shutdown()
       })
@@ -48,21 +51,24 @@ case class Instructions(actions: Map[String, Action]) extends SinglePass[Promise
         second <- instructions(cl, ns, ctx)
       } yield (first ::: second)
     case (node: LmxmlNode) :: ns =>
-      val head = actions.get(node.name) match {
-        case Some(fun) => fun(node, cl, ctx).apply(this)
-        case _ => Promise(Nil)
+      val ((nNode, nCtx), nLog) = actions.get(node.name) match {
+        case Some(fun) => fun(node, cl, ctx)
+        case _ => node -> ctx -> None
       }
+
       for {
-        first <- head
+        first <- instructions(cl, nNode.children, nCtx)
         second <- instructions(cl, ns, ctx)
-      } yield (first ::: second)
+      } yield {
+        nLog.map(List(_)).getOrElse(Nil) ::: first ::: second
+      }
     case TextNode(data, _, child) :: ns if !data.isEmpty =>
       println(data)
       instructions(cl, ns, ctx)
     case lmxml.CommentNode(_) :: ns => instructions(cl, ns, ctx)
-    case node :: ns =>
+    case n :: ns =>
       for {
-        first <- instructions(cl, node.children, ctx)
+        first <- instructions(cl, n.children, ctx)
         second <- instructions(cl, ns, ctx)
       } yield (first ::: second)
     case Nil => Promise(Nil)

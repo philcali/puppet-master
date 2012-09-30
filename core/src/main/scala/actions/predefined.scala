@@ -14,7 +14,7 @@ import java.net.URI
 
 import util.parsing.combinator.RegexParsers
 
-trait Action extends Function3[LmxmlNode, PuppetClient, Context, (Instructions => Promise[List[String]])] {
+trait Action extends Function3[LmxmlNode, PuppetClient, Context, ActionReturn] {
   def stripAttrs(attrs: Map[String, String], default: String) = {
     val key = attrs.get("name").getOrElse(default)
     val attr = attrs.get("value").filter(_ startsWith "@")
@@ -155,10 +155,10 @@ trait ParamParser extends RegexParsers { self: Action =>
  * source: access NodeSeq with @source
  */
 object SourceAction extends Action {
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     val source = ctx.response.map(as.TagSoup).getOrElse(xml.NodeSeq.Empty)
 
-    parent.instructions(cl, node.children, ctx + ("source" -> source))
+    node -> (ctx + ("source" -> source)) -> None
   }
 }
 
@@ -204,14 +204,13 @@ object SubmitAction extends Action with UrlParser with ParamParser {
 object PostAction extends Action with UrlParser with ParamParser {
   val logResponse = "POST [%d] - %s"
 
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
-    for {
-      r <- cl(makeUrl(node, ctx) << parseParams(node, ctx) > ctx)
-      lines <- parent.instructions(cl, node.children, r - "source")
-    } yield {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
+    cl(makeUrl(node, ctx) << parseParams(node, ctx) > ctx).map { r =>
       val res = r.response.get
-      logResponse.format (res.getStatusCode, res.getUri.toURL) :: lines
-    }
+      node -> (r - "source") -> Some(
+        logResponse.format (res.getStatusCode, res.getUri.toURL)
+      )
+    }.apply()
   }
 }
 
@@ -226,20 +225,19 @@ object PostAction extends Action with UrlParser with ParamParser {
 object GoAction extends Action with UrlParser with ParamParser {
   val logResponse = "GET [%d] - %s"
 
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     val theUrl = makeUrl(node, ctx)
 
     val temp = node.attrs.get("base")
       .map(_ => ctx + ("base" -> theUrl.url))
       .getOrElse(ctx)
 
-    for {
-      r <- cl(theUrl <<? parseParams(node, temp) > temp)
-      lines <- parent.instructions(cl, node.children, r - "source")
-    } yield {
+    cl(theUrl <<? parseParams(node, temp) > temp).map { r =>
       val res = r.response.get
-      logResponse.format (res.getStatusCode, res.getUri.toURL) :: lines
-    }
+      node -> (r - "source") -> Some(
+        logResponse.format (res.getStatusCode, res.getUri.toURL)
+      )
+    }.apply()
   }
 }
 
@@ -249,7 +247,7 @@ object GoAction extends Action with UrlParser with ParamParser {
  * find @by-css="#id .class > elem": attempts to use CSS selectors on source
  */
 object FindAction extends Action {
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     val byCss = node.attrs.get("by-css").getOrElse("*")
     val con = node.attrs.get("contains").map(_.r).getOrElse(""".*""".r)
 
@@ -258,7 +256,7 @@ object FindAction extends Action {
       .map(_ ? byCss getOrElse (xml.NodeSeq.Empty))
       .map(_ filter (n => con.findFirstMatchIn(n.text).isDefined))
 
-    parent.instructions(cl, node.children, ctx unwrap ("find-results" -> results))
+    node -> (ctx unwrap ("find-results" -> results)) -> None
   }
 }
 
@@ -269,12 +267,12 @@ object FindAction extends Action {
  * set @name="something" @value="@href": tags value with a specific name
  */
 object SetAction extends Action {
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     val (key, attr) = stripAttrs(node.attrs, node.name)
     val value = ctx.get[xml.NodeSeq]("find-results").map(
       n => attr.map(n \ _).getOrElse(n).text)
 
-    parent.instructions(cl, node.children, ctx + (key -> value.getOrElse("")))
+    node -> (ctx + (key -> value.getOrElse(""))) -> None
   }
 }
 
@@ -287,22 +285,37 @@ object SetAction extends Action {
  * each @name="something" @value="@href" @take="3": grabs first three
  */
 object EachAction extends Action {
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
-    ctx.get[xml.NodeSeq]("find-results").map(ns =>
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
+    val key = node.attrs.get("name").getOrElse(node.name)
+    node.copy(children = ctx.get[xml.NodeSeq]("find-results").map(ns =>
       node.attrs.get("take").map(_.toInt) match {
         case Some(index) if index > 0 => ns.take(index)
         case None => ns
-      }).map({
-        case xs if xs.headOption.isDefined =>
-          val (k, attr) = stripAttrs(node.attrs, node.name)
-          val v = attr.map(xs.head \ _).getOrElse(xs.head).text
-          for {
-            s1 <- parent.instructions(cl, node.children, ctx + (k -> v))
-            s2 <- parent.instructions(cl, Seq(node), ctx + ("find-results" -> xs.tail))
-          } yield (s1 ::: s2)
-        case _ => Promise(Nil)
+      }).map(_.zipWithIndex.map {
+        case (n, i) =>
+          LmxmlNode(
+            "[each-item]",
+            Map("index" -> i.toString, "each-key" -> key) ++ node.attrs,
+            node.children
+          )
       }
-    ).getOrElse(Promise(Nil))
+    ).getOrElse(Nil)) -> ctx -> None
+  }
+}
+
+/**
+ * Helper action for EachAction
+ * it loads the index of the iteration in the Context
+ */
+object EachItemAction extends Action {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
+    ctx.get[xml.NodeSeq]("find-results").map { ns =>
+      val index = node.attrs.get("index").map(_.toInt).getOrElse(0)
+      val key = node.attrs.get("each-key").getOrElse("each")
+      val (k, attr) = stripAttrs(node.attrs, key)
+      val v = attr.map(ns(index) \ _).getOrElse(ns(index)).text
+      node -> (ctx + (k -> v) + ("index" -> index)) -> None
+    } getOrElse (node -> ctx -> None)
   }
 }
 
@@ -314,7 +327,7 @@ object EachAction extends Action {
  * println @context @value="@find-results": prints specific context value
  */
 object PrintAction extends Action {
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     node.attrs.get("context") match {
       case Some(_) => node.attrs.get("value").map(_.stripPrefix("@")) match {
         case Some(key) => ctx.get(key).foreach(println)
@@ -322,7 +335,7 @@ object PrintAction extends Action {
       }
       case None => ctx.response.map(as.String).foreach(println)
     }
-    parent.instructions(cl, node.children, ctx)
+    node -> ctx -> None
   }
 }
 
@@ -340,7 +353,7 @@ object DownloadAction extends Action {
     }
   }
 
-  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = parent => {
+  def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
     val dest = node.attrs.get("to").map(new File(_)).getOrElse(new File("."))
     if (!dest.exists) dest.mkdirs
 
@@ -350,6 +363,6 @@ object DownloadAction extends Action {
       pump(res.getResponseBodyAsStream, new FileOutputStream(file))
     }
 
-    parent.instructions(cl, node.children, ctx)
+    node -> ctx -> None
   }
 }
