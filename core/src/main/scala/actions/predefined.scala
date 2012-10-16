@@ -13,6 +13,9 @@ import java.net.URLEncoder
 import java.net.URI
 
 import util.parsing.combinator.RegexParsers
+import com.ning.http.client.FilePart
+import javax.activation.MimetypesFileTypeMap
+import tools.jline.console.completer.FileNameCompleter
 
 trait Action extends Function3[LmxmlNode, PuppetClient, Context, ActionReturn] {
   def stripAttrs(attrs: Map[String, String], default: String) = {
@@ -94,7 +97,11 @@ trait ParamParser extends RegexParsers { self: Action =>
 
   type Yank = (String, Context) => String
 
-  val reader = new tools.jline.console.ConsoleReader()
+  val reader = {
+    val r = new tools.jline.console.ConsoleReader()
+    r.addCompleter(new FileNameCompleter())
+    r
+  }
 
   val ident = """[a-zA-Z0-9_\-]+""".r
 
@@ -139,9 +146,9 @@ trait ParamParser extends RegexParsers { self: Action =>
   def parseParams(node: LmxmlNode, ctx: Context) = {
     val submitted = (node.attrs /: reservedKeys)(_ - _)
 
-    (submitted.get("file") match {
+    (submitted.get("file-params") match {
       case Some(file) if Params.validate(file) =>
-        Params.convert(file) ++ (submitted - "file")
+        Params.convert(file) ++ (submitted - "file-params")
       case _ => submitted
     }).map {
       case (k, v) => k -> yank(v).apply(v, ctx)
@@ -167,7 +174,7 @@ object SourceAction extends Action {
  *
  * submit @to="form.action" @method="get"
  * submit @form="form#gbqf" @q="lmxml"
- * submit @form="form" @file="data.json"
+ * submit @form="form" @file-params="data.json"
  */
 object SubmitAction extends Action with UrlParser with ParamParser {
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
@@ -198,14 +205,29 @@ object SubmitAction extends Action with UrlParser with ParamParser {
  *   password: "*******"
  * }
  * post @to="form.action" @username="@username"
- * post @to="form.action" @file="submission.properties"
- * post @to="form.action" @file="data.json"
+ * post @to="form.action" @file-params="submission.properties"
+ * post @to="form.action" @file-params="data.json"
  */
 object PostAction extends Action with UrlParser with ParamParser {
   val logResponse = "POST [%d] - %s"
+  val mimeMapper = new MimetypesFileTypeMap()
 
+  // TODO: make this nicer perhaps?
   def apply(node: LmxmlNode, cl: PuppetClient, ctx: Context) = {
-    cl(makeUrl(node, ctx) << parseParams(node, ctx) > ctx).map { r =>
+    val (built, params) =
+      ((makeUrl(node, ctx), Map[String,String]()) /: parseParams(node, ctx)) {
+        case ((req, oldParams), (k, v)) =>
+          val file = new File(v)
+          if (file.exists) {
+            val mimeType = mimeMapper.getContentType(file)
+            val filePart = new FilePart(k, file, mimeType, "UTF-8")
+            req.addBodyPart(filePart) -> oldParams
+          } else {
+            req -> (oldParams + (k -> v))
+          }
+      }
+
+    cl(built << params > ctx).map { r =>
       val res = r.response.get
       node -> (r - "source") -> Some(
         logResponse.format (res.getStatusCode, res.getUri.toURL)
@@ -343,8 +365,11 @@ object PrintAction extends Action {
  * Downloads response to file; uses file name from request
  *
  * download @to="location"
+ * download @to="location" @name="file[@index].mp3"
  */
 object DownloadAction extends Action {
+  val ContextReplacer = """\[@(.+)\]""".r
+
   def pump(in: java.io.InputStream, out: java.io.OutputStream): Unit = {
     val buffer = new Array[Byte](1024)
     in.read(buffer) match {
@@ -359,7 +384,14 @@ object DownloadAction extends Action {
 
     ctx.response.foreach { res =>
       val str = res.getUri.toURL.getFile
-      val file = new File(dest, str.split("/").takeRight(1).head)
+      val fromReq = str.split("/").takeRight(1).head
+      val fileName = node.attrs.get("name").map { n =>
+        (n /: ContextReplacer.findAllIn(n).matchData) {
+          case (finalized, matched) =>
+            ContextReplacer.replaceFirstIn(finalized, matched.group(1))
+        }
+      }
+      val file = new File(dest, fileName getOrElse fromReq)
       pump(res.getResponseBodyAsStream, new FileOutputStream(file))
     }
 
