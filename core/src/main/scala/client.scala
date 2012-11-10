@@ -16,9 +16,7 @@ import com.ning.http.client.{
 import java.io.{ File, FileOutputStream }
 import collection.JavaConversions.asScalaBuffer
 
-case class PuppetClient(config: Config) extends Http {
-  override lazy val client = new AsyncHttpClient(config)
-}
+class PuppetException(reason: String) extends RuntimeException(reason)
 
 object PuppetConfig {
   val defaultConfig = default.build

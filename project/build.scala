@@ -23,7 +23,7 @@ object PuppetBuild extends Build {
       libraryDependencies <++= (scalaVersion) ( sv => Seq(
         "com.github.philcali" %% "css-query-core" % "0.1.0",
         "org.scala-lang" % "jline" % sv,
-        "net.databinder.dispatch" %% "core" % "0.9.1",
+        "net.databinder.dispatch" %% "dispatch-core" % "0.9.4",
         "org.ccil.cowan.tagsoup" % "tagsoup" % "1.2.1",
         "com.github.philcali" %% "lmxml-core" % "0.1.2",
         "org.scalatest" %% "scalatest" % "1.8" % "test"

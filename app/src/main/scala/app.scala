@@ -55,14 +55,12 @@ object Main {
       .map(JSTransform().parse).map(_ + systemDefaults)
       .getOrElse(systemDefaults)
 
-    val proms = Lmxml.fromFile(lmxmlFile)(trans andThen Instructions.Default)
+    val logs = Lmxml.fromFile(lmxmlFile)(trans andThen Instructions.Default)
 
     val output = out.map(new java.io.FileWriter(_))
 
-    // In each promise, gather log lines
     for {
-      p <- proms
-      lines <- p
+      lines <- logs
     } {
       lines.foreach(l => output.map(_.write(l + "\n")).getOrElse(println(l)))
     }
