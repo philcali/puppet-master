@@ -1,0 +1,9 @@
+browser
+instructions
+  go @to="http://apod.nasa.gov/apod/archivepix.html"
+    find @by-css="center + b > a"
+      each @name="picture" @value="@href" @take="300"
+        go @to="picture"
+          find @by-css="img"
+            each @name="APOD" @value="@src"
+              go @to="APOD" download @to="./apod/"

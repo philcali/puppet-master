@@ -10,7 +10,6 @@ import java.io.{ File, PrintStream, FileOutputStream, BufferedInputStream }
 
 import com.ning.http.client.FilePart
 import javax.activation.MimetypesFileTypeMap
-import util.parsing.combinator.RegexParsers
 
 case class ActionContext(node: LmxmlNode, cl: Http, context: Context) {
   def basicReturn(newContext: Context, log: Option[String] = None) = {
@@ -123,7 +122,7 @@ object PostAction extends Action {
 }
 
 /**
- * Makes a simple GET
+ * Makes a simple Request
  *
  * go @to="example.com": makes a GET request
  * go @to="example.com" @base: makes a GET request, and stores this url as the
@@ -307,67 +306,30 @@ object DownloadAction extends Action {
  * Runs a commandline option
  *
  * run @cmd="mkdir -p [read@ Create a directory >]"
- * run @cmd="spdf < [@source] > page.pdf"
+ * run @cmd="spdf < source > page.pdf"
  * run @cmd="ls *.png" @name="local-pngs": To be used later
  */
-object ConsoleAction extends Action with RegexParsers {
+object ConsoleAction extends Action {
+  import java.io.{ ByteArrayInputStream => BAIS }
   import sys.process._
 
-  type Builder = (ProcessBuilder => ProcessBuilder)
-
-  class ConsoleOut extends ProcessLogger {
-    val outLines = collection.mutable.ListBuffer[String]()
-    val errLines = collection.mutable.ListBuffer[String]()
-
-    def outputLines = outLines.toList
-    def output = outLines.mkString("\n")
-
-    def errorLines = errLines.toList
-    def error = errLines.mkString("\n")
-
-    def out(s: => String): Unit = outLines += s
-    def err(s: => String): Unit = errLines += s
-    def buffer[T](f: => T): T = f
-  }
-
-  def command = """[^\|><&;]+""".r
-
-  def process = command ^^ (Process(_))
-
-  def redirectedIn: Parser[Builder] = "<" ~> process ^^ { p => _ #< p }
-
-  def redirectedOut: Parser[Builder] = ">" ~> command ^^ { file =>
-    _ #> new File(file)
-  }
-
-  def piped: Parser[Builder] = "|" ~> process ^^ { p => _ #| p }
-
-  def conditional: Parser[Builder] = "&&" ~> process ^^ { p => _ #&& p }
-
-  def separate: Parser[Builder] = ";" ~> process ^^ { p => _ ### p }
-
-  def breaks = (redirectedOut | redirectedIn | piped | conditional | separate)
-
-  def line = process ~ rep(breaks) ^^ {
-    case cmd ~ bs => (cmd /: bs)({ case (c, b) => b(c) })
-  }
-
-  def execute(cmds: String) = parseAll(line, cmds) match {
-    case Success(p, i) =>
-      val console = new ConsoleOut
-      val code = p ! console
-      code -> console
-    case e: NoSuccess =>
-      val console = new ConsoleOut
-      console err ("ERROR: %s" format e.msg)
-      1 -> console
+  case class CommanLine(ctx: Context) extends ConsoleParsers {
+    override def redirectedIn: Parser[Builder] = "<" ~> command ^^ { cmd =>
+      pro => ctx.data
+                .get(cmd.trim).map(_.toString)
+                .map(s => new BAIS(s.getBytes))
+                .map(s => pro #< s)
+                .getOrElse(pro #< Process(cmd))
+    }
   }
 
   def perform = {
     case action @ ActionContext(node, _, ctx) =>
       val log = "[Console: %d] %s"
       val params = NodeParamsEmbeded(node, ctx)
-      params.get("cmd").map(execute).map {
+      val parser = CommanLine(ctx)
+
+      params.get("cmd").map(parser.execute).map {
         case (code, console) =>
           console.errorLines.foreach(System.err.println)
           val key = params.get("name").getOrElse("console")
