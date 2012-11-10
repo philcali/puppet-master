@@ -1,21 +1,16 @@
 package com.github.philcali.puppet
 package actions
 
-import utils.Params
-
 import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
 
 import dispatch._
 import css.query.default._
 
-import java.io.{ File, FileOutputStream }
-import java.net.URLEncoder
-import java.net.URI
+import java.io.{ File, PrintStream, FileOutputStream, BufferedInputStream }
 
-import util.parsing.combinator.RegexParsers
 import com.ning.http.client.FilePart
 import javax.activation.MimetypesFileTypeMap
-import tools.jline.console.completer.FileNameCompleter
+import util.parsing.combinator.RegexParsers
 
 case class ActionContext(node: LmxmlNode, cl: Http, context: Context) {
   def basicReturn(newContext: Context, log: Option[String] = None) = {
@@ -44,137 +39,6 @@ trait Action {
   }
 }
 
-trait UrlParser { self: Action =>
-  private val http = """[a-zA-Z]{2,5}://""".r
-
-  private val unsafe = Map(
-    ' ' -> "%20",
-    '"' -> "%22",
-    '<' -> "%3C", '>' -> "%3E",
-    '#' -> "%23",
-    '%' -> "%25",
-    '{' -> "%7B", '}' -> "%7D",
-    '|' -> "%7C",
-    '\\' -> "%5C",
-    '~' -> "%7E",
-    '^' -> "%5E",
-    '[' -> "%5B", "]" -> "%5D",
-    '`' -> "%60"
-  )
-
-  private val reserved = Map(
-    '$' -> "%24",
-    '&' -> "%26",
-    '+' -> "%2B",
-    ',' -> "%2C",
-    '/' -> "%2F",
-    ':' -> "%3A",
-    ';' -> "%3B",
-    '=' -> "%3D",
-    '?' -> "%3F",
-    '@' -> "%40"
-  )
-
-  def encodeAll(s: String) = {
-    s.map(c =>
-      unsafe.get(c).getOrElse(reserved.get(c).getOrElse(c.toString))).mkString
-  }
-
-  def encode(s: String) =
-    s.map(c => unsafe.get(c).getOrElse(c.toString)).mkString
-
-  def makeUrl(node: LmxmlNode, ctx: Context) = {
-    val evaled = node.attrs.get("to")
-      .map(to => ctx.get(to).getOrElse(to))
-      .map(to => ctx.response.map(_.getUri).map { uri =>
-        if (http.findFirstMatchIn(to).filter(_.start == 0).isEmpty) {
-          // No way to know if URL is valid unless parsed
-          try {
-            ctx.get("base").map(new URI(_)).getOrElse(uri).resolve(to).toString
-          } catch {
-            case _ =>
-              // Attempt to properly encode url's (form vs url)
-              val str = ctx.get("base").getOrElse(uri.toURL.toString)
-              str.stripSuffix("/") + "/" +
-              (to.stripPrefix("/").split("/").toList.reverse match {
-                case head :: tail => encode(head) :: tail.map(encodeAll)
-                case Nil => Nil
-              }).reverse.mkString("/")
-          }
-        } else to
-      }.getOrElse(to))
-    val theUrl = url(evaled.get)
-    val cookied = (theUrl /: ctx.cookies.values)(_ addCookie _)
-    if (ctx.data.contains("secure")) cookied.secure else cookied
-  }
-}
-
-trait ParamParser extends RegexParsers { self: Action =>
-  override def skipWhitespace = false
-
-  protected val reservedKeys = List("to", "base", "secure")
-
-  type Yank = (String, Context) => String
-
-  val reader = {
-    val r = new tools.jline.console.ConsoleReader()
-    r.addCompleter(new FileNameCompleter())
-    r
-  }
-
-  val ident = """[a-zA-Z0-9_\-]+""".r
-
-  val everything = """[^@]+""".r
-
-  def fromCss: Parser[Yank] = "css@" ~> everything ~ opt("@" ~> ident) ^^ {
-    case selector ~ filter => (value, ctx) => {
-      val rtn = ctx.get[xml.NodeSeq]("source").map(
-        _ ? selector getOrElse (xml.NodeSeq.Empty))
-      filter.map (attr =>
-        rtn map (_ \ ("@" + attr) text)
-      ).getOrElse(
-        rtn map (_ text)
-      ).getOrElse(
-        value
-      )
-    }
-  }
-
-  def fromPrompt: Parser[Yank] = "read@" ~> everything ~ opt("@" ~> ident) ^^ {
-    case prompt ~ ctxKey => (value, ctx) => {
-      ctxKey.map(ctx.get[String](_)).filter(_.isDefined).map(_.get).getOrElse(
-        reader.readLine(prompt)
-      )
-    }
-  }
-
-  def fromPass: Parser[Yank] = "pass@" ~> everything ^^ (
-    prompt => (value, ctx) => reader.readLine(prompt, '*')
-  )
-
-  def options = (fromCss | fromPrompt | fromPass)
-
-  def yank(input: String): Yank = parseAll(options, input) match {
-    case Success(fun, _) => fun
-    case _ => (value, ctx) =>
-      if (value.startsWith("@")) {
-        ctx.get(value.stripPrefix("@")).map(_.toString).getOrElse(value)
-      } else value
-  }
-
-  def parseParams(node: LmxmlNode, ctx: Context) = {
-    val submitted = (node.attrs /: reservedKeys)(_ - _)
-
-    (submitted.get("file-params") match {
-      case Some(file) if Params.validate(file) =>
-        Params.convert(file) ++ (submitted - "file-params")
-      case _ => submitted
-    }).map {
-      case (k, v) => k -> yank(v).apply(v, ctx)
-    }
-  }
-}
-
 /**
  * Caches response into context
  *
@@ -195,7 +59,7 @@ object SourceAction extends Action {
  * submit @form="form#gbqf" @q="lmxml"
  * submit @form="form" @file-params="data.json"
  */
-object SubmitAction extends Action with UrlParser with ParamParser {
+object SubmitAction extends Action {
   def perform = {
     case action @ ActionContext(node, _, ctx) =>
       val form = node.attrs.get("form").getOrElse("form")
@@ -229,7 +93,7 @@ object SubmitAction extends Action with UrlParser with ParamParser {
  * post @to="form.action" @file-params="submission.properties"
  * post @to="form.action" @file-params="data.json"
  */
-object PostAction extends Action with UrlParser with ParamParser {
+object PostAction extends Action {
   val logResponse = "POST [%d] - %s"
   val mimeMapper = new MimetypesFileTypeMap()
 
@@ -237,7 +101,7 @@ object PostAction extends Action with UrlParser with ParamParser {
   def perform = {
     case action @ ActionContext(node, cl, ctx) =>
       val (built, params) =
-        ((makeUrl(node, ctx), Map[String,String]()) /: parseParams(node, ctx)) {
+        ((SafeUrl(node, ctx), Map[String,String]()) /: NodeParams(node, ctx)) {
           case ((req, oldParams), (k, v)) =>
             val file = new File(v)
             if (file.exists) {
@@ -266,18 +130,18 @@ object PostAction extends Action with UrlParser with ParamParser {
  * base request for future requests
  * go @to="example.com" @base @secure: makes a secured GET request
  */
-object GoAction extends Action with UrlParser with ParamParser {
+object GoAction extends Action {
   val logResponse = "GET [%d] - %s"
 
   def perform = {
     case action @ ActionContext(node, cl, ctx) =>
-      val theUrl = makeUrl(node, ctx)
+      val theUrl = SafeUrl(node, ctx)
 
       val temp = node.attrs.get("base")
         .map(_ => ctx + ("base" -> theUrl.url))
         .getOrElse(ctx)
 
-      cl(theUrl <<? parseParams(node, temp) > temp).map { r =>
+      cl(theUrl <<? NodeParams(node, temp) > temp).map { r =>
         val res = r.response.get
         action.basicReturn(r - "source", Some(
           logResponse.format (res.getStatusCode, res.getUri.toURL)
@@ -386,7 +250,6 @@ object PrintAction extends Action {
           case None => println(ctx)
         }
         case None =>
-          ctx.response.map(println)
           ctx.response.map(as.String).foreach(println)
       }
       action basicReturn ctx
@@ -400,10 +263,10 @@ object PrintAction extends Action {
  * download @to="location" @name="file[@index].mp3"
  */
 object DownloadAction extends Action {
-  val ContextReplacer = """\[@(.+)\]""".r
+  val types = Map("text" -> "UTF-8")
 
   def pump(in: java.io.InputStream, out: java.io.OutputStream): Unit = {
-    val buffer = new Array[Byte](1024)
+    val buffer = new Array[Byte](2048)
     in.read(buffer) match {
       case n if n >= 0 => out.write(buffer, 0, n); pump(in, out)
       case _ => out.close()
@@ -412,22 +275,104 @@ object DownloadAction extends Action {
 
   def perform = {
     case action @ ActionContext(node, _, ctx) =>
-      val dest = node.attrs.get("to").map(new File(_)).getOrElse(new File("."))
+      val params = NodeParamsEmbeded(node, ctx)
+      val dest = params.get("to").map(new File(_)).getOrElse(new File("."))
       if (!dest.exists) dest.mkdirs
 
       ctx.response.foreach { res =>
         val str = res.getUri.toURL.getFile
-        val fromReq = str.split("/").takeRight(1).head
-        val fileName = node.attrs.get("name").map { n =>
-          (n /: ContextReplacer.findAllIn(n).matchData) {
-            case (finalized, matched) =>
-              ContextReplacer.replaceFirstIn(finalized, matched.group(1))
-          }
+        // TODO: fix this please
+        val fromReq = try {
+          str.split("/").takeRight(1).head
+        } catch {
+          case _ => "index.html"
         }
+        val fileName = params.get("name")
         val file = new File(dest, fileName getOrElse fromReq)
-        pump(res.getResponseBodyAsStream, new FileOutputStream(file))
+        val fileType = types.get(params.get("type").getOrElse("binary"))
+
+        val fs = new FileOutputStream(file)
+
+        pump(
+          new BufferedInputStream(res.getResponseBodyAsStream),
+          fileType.map(cs => new PrintStream(fs)).getOrElse(fs)
+        )
       }
 
       action basicReturn ctx
+  }
+}
+
+/**
+ * Runs a commandline option
+ *
+ * run @cmd="mkdir -p [read@ Create a directory >]"
+ * run @cmd="spdf < [@source] > page.pdf"
+ * run @cmd="ls *.png" @name="local-pngs": To be used later
+ */
+object ConsoleAction extends Action with RegexParsers {
+  import sys.process._
+
+  type Builder = (ProcessBuilder => ProcessBuilder)
+
+  class ConsoleOut extends ProcessLogger {
+    val outLines = collection.mutable.ListBuffer[String]()
+    val errLines = collection.mutable.ListBuffer[String]()
+
+    def outputLines = outLines.toList
+    def output = outLines.mkString("\n")
+
+    def errorLines = errLines.toList
+    def error = errLines.mkString("\n")
+
+    def out(s: => String): Unit = outLines += s
+    def err(s: => String): Unit = errLines += s
+    def buffer[T](f: => T): T = f
+  }
+
+  def command = """[^\|><&;]+""".r
+
+  def process = command ^^ (Process(_))
+
+  def redirectedIn: Parser[Builder] = "<" ~> process ^^ { p => _ #< p }
+
+  def redirectedOut: Parser[Builder] = ">" ~> command ^^ { file =>
+    _ #> new File(file)
+  }
+
+  def piped: Parser[Builder] = "|" ~> process ^^ { p => _ #| p }
+
+  def conditional: Parser[Builder] = "&&" ~> process ^^ { p => _ #&& p }
+
+  def separate: Parser[Builder] = ";" ~> process ^^ { p => _ ### p }
+
+  def breaks = (redirectedOut | redirectedIn | piped | conditional | separate)
+
+  def line = process ~ rep(breaks) ^^ {
+    case cmd ~ bs => (cmd /: bs)({ case (c, b) => b(c) })
+  }
+
+  def execute(cmds: String) = parseAll(line, cmds) match {
+    case Success(p, i) =>
+      val console = new ConsoleOut
+      val code = p ! console
+      code -> console
+    case e: NoSuccess =>
+      val console = new ConsoleOut
+      console err ("ERROR: %s" format e.msg)
+      1 -> console
+  }
+
+  def perform = {
+    case action @ ActionContext(node, _, ctx) =>
+      val log = "[Console: %d] %s"
+      val params = NodeParamsEmbeded(node, ctx)
+      params.get("cmd").map(execute).map {
+        case (code, console) =>
+          console.errorLines.foreach(System.err.println)
+          val key = params.get("name").getOrElse("console")
+          val note = Some(log format (code, params("cmd")))
+          action.basicReturn(ctx + (key -> console.output), note)
+      } getOrElse (action.basicReturn(ctx))
   }
 }

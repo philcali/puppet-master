@@ -18,7 +18,8 @@ object Instructions {
     "each" -> EachAction,
     "[each-item]" -> EachItemAction,
     "download" -> DownloadAction,
-    "println" -> PrintAction
+    "println" -> PrintAction,
+    "run" -> ConsoleAction
   )
 
   lazy val Default = Instructions(defaultSet)
