@@ -26,7 +26,9 @@ object PuppetBuild extends Build {
         "net.databinder.dispatch" %% "dispatch-core" % "0.9.4",
         "org.ccil.cowan.tagsoup" % "tagsoup" % "1.2.1",
         "com.github.philcali" %% "lmxml-core" % "0.1.2",
-        "org.scalatest" %% "scalatest" % "1.8" % "test"
+        "org.scalatest" %% "scalatest" % "1.8" % "test",
+        "net.databinder" %% "unfiltered-netty-server" % "0.6.4" % "test",
+        "net.databinder" %% "unfiltered-netty-uploads" % "0.6.4" % "test"
       ))
     )
   )

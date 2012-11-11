@@ -93,7 +93,7 @@ trait ParamParsers extends RegexParsers {
     case Success(fun, _) => fun
     case _ => (value, ctx) =>
       if (value.startsWith("@")) {
-        ctx.get(value.stripPrefix("@")).map(_.toString).getOrElse(value)
+        ctx.get[String](value.stripPrefix("@")).map(_.toString).getOrElse(value)
       } else value
   }
 

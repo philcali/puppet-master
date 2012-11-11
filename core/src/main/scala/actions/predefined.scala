@@ -10,15 +10,14 @@ import css.query.default._
 import java.io.{ File, PrintStream, FileOutputStream, BufferedInputStream }
 
 import com.ning.http.multipart.FilePart
-import javax.activation.MimetypesFileTypeMap
 
-case class ActionContext(node: LmxmlNode, cl: Http, context: Context) {
+case class ActionContext(node: LmxmlNode, cl: Http, ctx: Context) {
   def basicReturn(newContext: Context, log: Option[String] = None) = {
     ActionReturn(node, newContext, log)
   }
 }
 
-case class ActionReturn(node: LmxmlNode, context: Context, log: Option[String])
+case class ActionReturn(node: LmxmlNode, ctx: Context, log: Option[String])
 
 object Action {
   type Handler = PartialFunction[ActionContext, ActionReturn]
@@ -97,7 +96,6 @@ object SubmitAction extends Action {
  */
 object GoAction extends Action {
   val logResponse = "%s [%d] - %s"
-  val mimeMapper = new MimetypesFileTypeMap()
 
   def perform = {
     case action @ ActionContext(node, cl, ctx) =>
@@ -107,11 +105,9 @@ object GoAction extends Action {
             (req <:< Params.convert(v)) -> oldParams
           case ((req, oldParams), (k, v)) =>
             val file = new File(v)
-            if (file.exists) {
-              val mimeType = mimeMapper.getContentType(file)
+            if (k.startsWith("file-upload-") && file.exists) {
               val filePart = new FilePart(
-                k, file.getName, file,
-                FilePart.DEFAULT_CONTENT_TYPE, mimeType
+                k.stripPrefix("file-upload-"), file.getName, file
               )
               req.addBodyPart(filePart) -> oldParams
             } else {
