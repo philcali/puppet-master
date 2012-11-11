@@ -45,7 +45,7 @@ object NodeParamsEmbeded extends ParamParsers {
 
 trait ParamParsers extends RegexParsers {
 
-  protected val reservedKeys = List("to", "base", "secure")
+  protected val reservedKeys = List("to", "base", "secure", "type")
 
   type Yank = (String, Context) => String
 

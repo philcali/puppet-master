@@ -10,7 +10,6 @@ import java.io.{ File, FileOutputStream }
 object Instructions {
   lazy val defaultSet: Map[String, Action] = Map(
     "go" -> GoAction,
-    "post" -> PostAction,
     "submit" -> SubmitAction,
     "source" -> SourceAction,
     "find" -> FindAction,

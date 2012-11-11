@@ -1,6 +1,7 @@
 package com.github.philcali.puppet
 package actions
 
+import utils.Params
 import lmxml.{ LmxmlNode, TextNode, ParsedNode, SinglePass }
 
 import dispatch._
@@ -8,7 +9,7 @@ import css.query.default._
 
 import java.io.{ File, PrintStream, FileOutputStream, BufferedInputStream }
 
-import com.ning.http.client.FilePart
+import com.ning.http.multipart.FilePart
 import javax.activation.MimetypesFileTypeMap
 
 case class ActionContext(node: LmxmlNode, cl: Http, context: Context) {
@@ -71,53 +72,16 @@ object SubmitAction extends Action {
         .getOrElse(node.attrs.getOrElse("to", ""))
 
       // replace node with flattened to / action
-      val copied = node.copy(attrs = node.attrs + ("to" -> to) - "form")
-      val actionCopied = action.copy(node = copied)
-
-      nForm.map(_ ? "[method=post]" isDefined) match {
-        case Some(true) => PostAction perform (actionCopied)
-        case _ => GoAction perform (actionCopied)
+      val method = nForm.map(_ ? "[method=post]" isDefined) match {
+        case Some(true) => "POST"
+        case _ => "GET"
       }
-  }
-}
 
-/**
- * Makes a POST to a url
- *
- * post @to="form.action" {
- *   username: "pcali1",
- *   password: "*******"
- * }
- * post @to="form.action" @username="@username"
- * post @to="form.action" @file-params="submission.properties"
- * post @to="form.action" @file-params="data.json"
- */
-object PostAction extends Action {
-  val logResponse = "POST [%d] - %s"
-  val mimeMapper = new MimetypesFileTypeMap()
+      val copied = node.copy(
+        attrs = node.attrs + ("to" -> to) + ("type" -> method) - "form"
+      )
 
-  // TODO: make this nicer perhaps?
-  def perform = {
-    case action @ ActionContext(node, cl, ctx) =>
-      val (built, params) =
-        ((SafeUrl(node, ctx), Map[String,String]()) /: NodeParams(node, ctx)) {
-          case ((req, oldParams), (k, v)) =>
-            val file = new File(v)
-            if (file.exists) {
-              val mimeType = mimeMapper.getContentType(file)
-              val filePart = new FilePart(k, file, mimeType, "UTF-8")
-              req.addBodyPart(filePart) -> oldParams
-            } else {
-              req -> (oldParams + (k -> v))
-            }
-        }
-
-      cl(built << params > ctx).map { r =>
-        val res = r.response.get
-        action.basicReturn(r - "source", Some(
-          logResponse.format (res.getStatusCode, res.getUri.toURL)
-        ))
-      }.apply()
+      GoAction perform (action.copy(node = copied))
   }
 }
 
@@ -128,24 +92,58 @@ object PostAction extends Action {
  * go @to="example.com" @base: makes a GET request, and stores this url as the
  * base request for future requests
  * go @to="example.com" @base @secure: makes a secured GET request
+ * go @to="example.com" @type="PUT" @value="file|context"
+ * go @to="example.com" @req-headers="data.json"
  */
 object GoAction extends Action {
-  val logResponse = "GET [%d] - %s"
+  val logResponse = "%s [%d] - %s"
+  val mimeMapper = new MimetypesFileTypeMap()
 
   def perform = {
     case action @ ActionContext(node, cl, ctx) =>
-      val theUrl = SafeUrl(node, ctx)
+      val (built, params) =
+        ((SafeUrl(node, ctx), Map[String,String]()) /: NodeParams(node, ctx)) {
+          case ((req, oldParams), (k, v)) if k == "req-headers" =>
+            (req <:< Params.convert(v)) -> oldParams
+          case ((req, oldParams), (k, v)) =>
+            val file = new File(v)
+            if (file.exists) {
+              val mimeType = mimeMapper.getContentType(file)
+              val filePart = new FilePart(
+                k, file.getName, file,
+                FilePart.DEFAULT_CONTENT_TYPE, mimeType
+              )
+              req.addBodyPart(filePart) -> oldParams
+            } else {
+              req -> (oldParams + (k -> v))
+            }
+        }
 
       val temp = node.attrs.get("base")
-        .map(_ => ctx + ("base" -> theUrl.url))
+        .map(_ => ctx + ("base" -> built.url))
         .getOrElse(ctx)
 
-      cl(theUrl <<? NodeParams(node, temp) > temp).map { r =>
+      val verb = node.attrs.get("type").getOrElse("GET")
+
+      (verb match {
+        case "GET" =>
+          cl(built <<? params > temp)
+        case "POST" =>
+          cl(built << params > temp)
+        case "PUT" =>
+          params.get("value").map(new File(_)).filter(_.exists).map { file =>
+            cl(built <<< file > temp)
+          } getOrElse {
+            cl(built << params > temp)
+          }
+        case _ =>
+          cl(built.subject.setMethod(verb) > temp)
+      }) map { r =>
         val res = r.response.get
         action.basicReturn(r - "source", Some(
-          logResponse.format (res.getStatusCode, res.getUri.toURL)
+          logResponse.format (verb, res.getStatusCode, res.getUri.toURL)
         ))
-      }.apply()
+      } apply()
   }
 }
 
