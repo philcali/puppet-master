@@ -13,7 +13,7 @@ import java.io.File
 object Lmxml extends PlainLmxmlFactory with FileLoading
 
 object Main {
-  val DataFile = """\s+-d\s+(.*\.json$)\s+""".r
+  val DataFile = """\s*-d\s+(.*\.json)\s*""".r
 
   def printHelp = {
     println("""

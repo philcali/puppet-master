@@ -15,4 +15,6 @@ browser
                      |___/
     ```
     go @to="http://google.com"
-      source run @cmd="spdf < source > index.pdf"
+      submit @form="form[name=f]" @q="read@ Search > "
+        find @by-css="li.g h3.r > a"
+          each println @context @value="each"

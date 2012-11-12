@@ -1,6 +1,0 @@
-{
-  "username": "read@ Username > @username",
-  "password": "pass@ Password > ",
-  "lt": "css@input[name=lt]@value",
-  "_eventId": "submit"
-}

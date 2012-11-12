@@ -1,0 +1,32 @@
+browser
+  config
+    user-agent "Mozilla/5.0"
+    follow-redirects "true"
+    keep-alive "true"
+    request-timeout "-1" // "Don't time out"
+instructions
+  // "Change these values in dod.json"
+  set @month="{month}" @folder="{folder}"
+    [dod]
+
+---
+
+[dod]:
+  go @to="http://dwellingofduels.net/" @base
+    find @by-css="#navlistmain > li a" @contains="^Past"
+      set @with-results @desired-month="@href"
+        [latest]
+
+[latest]:
+  go @to="desired-month"
+    find @by-css="#pastlinks li a" @contains="@month"
+      "Go to '[@month]'"
+      set @with-results @entries="@href"
+        [listing]
+
+[listing]:
+  go @to="entries"
+    find @by-css="#mainentries a"
+      each @name="song" @value="@href"
+        "Downloading '[@song]'"
+        go @to="song" download @to="@folder"

@@ -62,7 +62,8 @@ case class Instructions(actions: Map[String, Action])
       }
       nLog.map(List(_)).getOrElse(Nil) :::
       nNode.children.toList.flatMap(n => _instruction(cl, n, nCtx))
-    case TextNode(data, _, child) => println(data); Nil
+    case TextNode(data, _, child) =>
+      println(NodeParamsEmbeded.yank(data).apply(data, ctx)); Nil
     case CommentNode(_) => Nil
     case _ => node.children.toList.flatMap(n => _instruction(cl, n, ctx))
   }

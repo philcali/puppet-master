@@ -70,12 +70,12 @@ object SubmitAction extends Action {
       val to = nForm.map(_ \ "@action" text)
         .getOrElse(node.attrs.getOrElse("to", ""))
 
-      // replace node with flattened to / action
       val method = nForm.map(_ ? "[method=post]" isDefined) match {
         case Some(true) => "POST"
         case _ => "GET"
       }
 
+      // replace node with flattened to / action
       val copied = node.copy(
         attrs = node.attrs + ("to" -> to) + ("type" -> method) - "form"
       )
@@ -151,8 +151,9 @@ object GoAction extends Action {
 object FindAction extends Action {
   def perform = {
     case action @ ActionContext(node, _, ctx) =>
-      val byCss = node.attrs.get("by-css").getOrElse("*")
-      val con = node.attrs.get("contains").map(_.r).getOrElse(""".*""".r)
+      val params = NodeParams(node, ctx)
+      val byCss = params.get("by-css").getOrElse("*")
+      val con = params.get("contains").map(_.r).getOrElse(""".*""".r)
 
       val results = ctx.get[xml.NodeSeq]("source")
         .orElse(ctx.response.map(as.TagSoup))
@@ -164,19 +165,31 @@ object FindAction extends Action {
 }
 
 /**
- * Sets a found result as a context value
+ * Sets a found result, or anything as a context value
  *
- * set @value="@href": sets found result attribute as context value
- * set @name="something" @value="@href": tags value with a specific name
+ * set @link="@href": Sets "link" -> "@href" in context
+ * set @with-results @link="@href": Sets node matching "@href" in context
  */
 object SetAction extends Action {
   def perform = {
     case action @ ActionContext(node, _, ctx) =>
-      val (key, attr) = stripAttrs(node.attrs, node.name)
-      val value = ctx.get[xml.NodeSeq]("find-results").map(
-        n => attr.map(n \ _).getOrElse(n).text)
+      val params = NodeParams(node, ctx) - "with-results"
+      val useNodes = (
+        node.attrs.contains("with-results") &&
+        ctx.get("find-results").isDefined
+      )
 
-      action.basicReturn(ctx + (key -> value.getOrElse("")))
+      val nCtx = (ctx /: params)({
+        case (c, (k, v)) =>
+          val value = if (useNodes) {
+            ctx.get[xml.NodeSeq]("find-results").get \ v text
+          } else {
+            v
+          }
+          c + (k -> value)
+      })
+
+      action basicReturn nCtx
   }
 }
 
